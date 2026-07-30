@@ -1,0 +1,78 @@
+# Docker Compose for E2E tests
+#
+# Builds from source and exposes services via nginx proxy for production-like testing.
+# Used by tests/e2e/conftest.py to run the full test suite.
+#
+# All services (MCP, A2A, Admin) run in a single FastAPI process behind nginx.
+#
+# Usage:
+#   docker compose -f docker-compose.e2e.yml up -d
+#
+# Port configuration (via environment variables):
+#   ADCP_SALES_PORT - Nginx proxy port (default: 8092, proxies to adcp-server:8080)
+#   POSTGRES_PORT   - PostgreSQL port (default: 5435)
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: adcp
+      POSTGRES_USER: adcp_user
+      POSTGRES_PASSWORD: secure_password_change_me
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5435}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U adcp_user -d adcp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  adcp-server:
+    build: .
+    environment:
+      DATABASE_URL: postgresql://adcp_user:secure_password_change_me@postgres:5432/adcp?sslmode=disable
+      SKIP_NGINX: "true"
+      SKIP_CRON: "true"
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      SUPER_ADMIN_EMAILS: ${SUPER_ADMIN_EMAILS:-}
+      ADCP_TESTING: ${ADCP_TESTING:-true}
+      ADCP_AUTH_TEST_MODE: ${ADCP_AUTH_TEST_MODE:-true}
+      CREATE_DEMO_TENANT: "true"
+      DELIVERY_WEBHOOK_INTERVAL: ${DELIVERY_WEBHOOK_INTERVAL:-}
+      ENCRYPTION_KEY: ${ENCRYPTION_KEY:-PEg0SNGQyvzi4Nft-ForSzK8AGXyhRtql1MgoUsfUHk=}  # TEST ONLY — never use in production
+      GOOGLE_CLIENT_ID: ${GOOGLE_CLIENT_ID:-}
+      GOOGLE_CLIENT_SECRET: ${GOOGLE_CLIENT_SECRET:-}
+      SALES_AGENT_DOMAIN: "sales-agent.example.com"
+      ADCP_MULTI_TENANT: "true"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - .:/app
+      - /app/.venv  # exclude local .venv — container uses its own
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  proxy:
+    image: nginx:stable
+    volumes:
+      - ./config/nginx/nginx-development.conf:/etc/nginx/nginx.conf:ro
+    depends_on:
+      - adcp-server
+    ports:
+      - "127.0.0.1:${ADCP_SALES_PORT:-8092}:8000"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:

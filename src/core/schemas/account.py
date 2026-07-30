@@ -1,0 +1,125 @@
+"""Account-related Pydantic schemas.
+
+Extends adcp library account types per pattern #1 (schema inheritance).
+All classes are re-exported from ``src.core.schemas`` for backward compatibility.
+
+beads: salesagent-x79
+"""
+
+from typing import Any
+
+from adcp.types import Account as LibraryAccountDomain
+from adcp.types import ListAccountsRequest as LibraryListAccountsRequest
+from adcp.types import ListAccountsResponse as LibraryListAccountsResponse
+from adcp.types import SyncAccountsRequest as LibrarySyncAccountsRequest
+from adcp.types.aliases import SyncAccountsSuccessResponse as LibrarySyncAccountsSuccess
+from pydantic import ConfigDict
+
+from src.core.config import get_pydantic_extra_mode
+from src.core.schemas._base import NestedModelSerializerMixin
+
+# ---------------------------------------------------------------------------
+# Core domain Account (used in ListAccountsResponse.accounts)
+# ---------------------------------------------------------------------------
+
+
+class Account(LibraryAccountDomain):
+    """Extends library Account with salesagent model_config.
+
+    Library provides: account_id, name, advertiser, billing_proxy, status,
+    brand, operator, billing, rate_card, payment_terms, credit_limit, setup,
+    account_scope, governance_agents, sandbox, ext.
+    """
+
+    model_config = ConfigDict(extra=get_pydantic_extra_mode())
+
+    # POST-S3: Buyer knows advertiser, rate_card, and payment_terms.
+    # Library model_dump defaults exclude_none=True which strips these when
+    # None.  Override to always include them so callers can distinguish
+    # "field absent" from "field=null".
+    _ALWAYS_INCLUDE = {"advertiser", "rate_card", "payment_terms"}
+
+    def model_dump(self, **kwargs: Any) -> dict[str, Any]:
+        result = super().model_dump(**kwargs)
+        for field in self._ALWAYS_INCLUDE:
+            if field not in result:
+                result[field] = getattr(self, field, None)
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Request schemas
+# ---------------------------------------------------------------------------
+
+
+class ListAccountsRequest(LibraryListAccountsRequest):
+    """Extends library ListAccountsRequest.
+
+    Library provides: status, pagination, sandbox, context, ext.
+    """
+
+    model_config = ConfigDict(extra=get_pydantic_extra_mode())
+
+
+class SyncAccountsRequest(LibrarySyncAccountsRequest):
+    """Extends library SyncAccountsRequest.
+
+    Library provides: idempotency_key, accounts, delete_missing, dry_run,
+    push_notification_config, context, ext.
+    """
+
+    model_config = ConfigDict(extra=get_pydantic_extra_mode())
+
+    # adcp 4.3 makes idempotency_key required.  Override as optional —
+    # generated at the transport boundary when not supplied by the caller.
+    idempotency_key: str | None = None  # type: ignore[assignment]
+
+
+# ---------------------------------------------------------------------------
+# Response schemas
+# ---------------------------------------------------------------------------
+
+
+class ListAccountsResponse(NestedModelSerializerMixin, LibraryListAccountsResponse):
+    """Extends library ListAccountsResponse.
+
+    Library provides: accounts, errors, pagination, context, ext.
+    NestedModelSerializerMixin ensures nested Account objects serialize correctly.
+    Accounts field redeclared for Pattern #4 (nested serialization with local subclass).
+    """
+
+    model_config = ConfigDict(extra=get_pydantic_extra_mode())
+
+    accounts: list[Account] = []  # type: ignore[assignment]  # Pattern #4: use local Account subclass
+
+    def __str__(self) -> str:
+        """Return human-readable summary message for protocol envelope."""
+        count = len(self.accounts) if self.accounts else 0
+        return f"Found {count} account{'s' if count != 1 else ''}."
+
+
+class SyncAccountsResponse(NestedModelSerializerMixin, LibrarySyncAccountsSuccess):
+    """Extends library SyncAccountsResponse success variant.
+
+    adcp 3.10: SyncAccountsResponse is a union TypeAlias (not RootModel).
+    Since the error variant is never constructed (ToolError handles failures),
+    we subclass the success variant directly. Fields (accounts, dry_run,
+    context, ext) are inherited.
+    """
+
+    model_config = ConfigDict(extra=get_pydantic_extra_mode())
+
+    def __str__(self) -> str:
+        """Return human-readable summary message for protocol envelope."""
+        count = len(self.accounts) if self.accounts else 0
+        dry_run_note = " (dry run)" if self.dry_run else ""
+        return f"Synced {count} account{'s' if count != 1 else ''}{dry_run_note}."
+
+
+__all__ = [
+    "Account",
+    "ListAccountsRequest",
+    "ListAccountsResponse",
+    "SyncAccountsRequest",
+    "SyncAccountsResponse",
+]
